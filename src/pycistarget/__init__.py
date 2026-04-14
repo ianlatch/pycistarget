@@ -1,5 +1,5 @@
-from pkg_resources import get_distribution, DistributionNotFound
+from importlib.metadata import version, PackageNotFoundError
 try:
-    __version__ = get_distribution("pycistarget").version
-except DistributionNotFound:
+    __version__ = version("pycistarget")
+except PackageNotFoundError:
     pass
