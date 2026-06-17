@@ -17,7 +17,7 @@ from pycistarget.motif_enrichment_result import MotifEnrichmentResult
 import math
 
 # TODO: Add these generic functions to another package
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def mean_axis1(arr):
     """
     Calculate column wise mean of 2D-numpy matrix with numba, mimicking `np.mean(x, axis=1)`.
@@ -33,7 +33,7 @@ def mean_axis1(arr):
         mean_axis1_array[i] = np.mean(arr[i, :])
     return mean_axis1_array
 
-@numba.njit
+@numba.njit(cache=True)
 def get_log2_fc(fg_mat, bg_mat):
     """
     Calculate log2 fold change between foreground and background matrix.
@@ -59,7 +59,7 @@ def get_log2_fc(fg_mat, bg_mat):
         (mean_axis1(fg_mat) + 10**-12) / (mean_axis1(bg_mat) + 10**-12)
     )
 
-@numba.jit(nopython=True)
+@numba.jit(nopython=True, cache=True)
 def rankdata_average_numba(arr: np.ndarray):
     """
     based on code from scipy
@@ -79,11 +79,11 @@ def rankdata_average_numba(arr: np.ndarray):
     result = .5 * (count[dense] + count[dense - 1] + 1)
     return result
 
-@numba.jit(nopython=True)
+@numba.jit(nopython=True, cache=True)
 def norm_sf(z):
     return ((1.0 + math.erf(-z / math.sqrt(2.0))) / 2.0)
 
-@numba.jit(nopython=True)
+@numba.jit(nopython=True, cache=True)
 def ranksums_numba(x: np.ndarray, y:np.ndarray):
     """
     based on code from scipy
@@ -99,7 +99,7 @@ def ranksums_numba(x: np.ndarray, y:np.ndarray):
     prob = 2 * norm_sf(abs(z))
     return z, prob
 
-@numba.jit(nopython=True, parallel = True)
+@numba.jit(nopython=True, parallel = True, cache=True)
 def ranksums_numba_multiple(X: np.ndarray, Y: np.ndarray):
     n = X.shape[0]
     if Y.shape[0] != n:
@@ -258,21 +258,29 @@ class DEM(MotifEnrichmentResult):
         self.add_motif_annotation()
 
         # Get motif hits
-        result["Motif_hit_thr"] = None
-        result["Motif_hits"] = None
         significant_motifs = result.index
         motif_hits = {}
+        motif_hit_thresholds = []
+        motif_hit_counts = []
         for motif in significant_motifs:
+            # Look up the foreground scores for this motif once instead of
+            # repeatedly via .loc.
+            fg_motif_scores = foreground_scores.loc[motif]
             if self.motif_hit_thr is None:
                 thr = get_optimal_threshold_roc(
-                    foreground_scores.loc[motif].values,
+                    fg_motif_scores.values,
                     background_scores.loc[motif].values,)
             else:
-                thr = self.motif_hit_thr 
-            motif_hits[motif] = foreground_scores.loc[motif].loc[
-                    foreground_scores.loc[motif] > thr].index.tolist()
-            result.loc[motif, "Motif_hit_thr"] = thr
-            result.loc[motif, "Motif_hits"] = len(motif_hits[motif])
+                thr = self.motif_hit_thr
+            hits = fg_motif_scores[fg_motif_scores > thr].index.tolist()
+            motif_hits[motif] = hits
+            motif_hit_thresholds.append(thr)
+            motif_hit_counts.append(len(hits))
+        # Assign the per-motif columns in a single vectorized operation instead
+        # of scalar .loc assignment inside the loop (significant_motifs is, by
+        # construction, result.index in order).
+        result["Motif_hit_thr"] = motif_hit_thresholds
+        result["Motif_hits"] = motif_hit_counts
         
         rs_motif_hits = {
             motif: list(set(

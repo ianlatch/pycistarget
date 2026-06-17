@@ -26,14 +26,20 @@ def region_names_to_coordinates(region_names: List):
     """
     Convert region names (UCSC format) to coordinates (pd.DataFrame)
     """
-    chrom=pd.DataFrame([i.split(':', 1)[0] for i in region_names if ':' in i])
-    coor = [i.split(':', 1)[1] for i in region_names if ':' in i]
-    start=pd.DataFrame([int(i.split('-', 1)[0]) for i in coor])
-    end=pd.DataFrame([int(i.split('-', 1)[1]) for i in coor])
-    regiondf=pd.concat([chrom, start, end], axis=1, sort=False)
-    regiondf.index=[i for i in region_names if ':' in i]
-    regiondf.columns=['Chromosome', 'Start', 'End']
-    return(regiondf)
+    names = [i for i in region_names if ':' in i]
+    chrom = []
+    start = []
+    end = []
+    for name in names:
+        chromosome, coordinate = name.split(':', 1)
+        start_coordinate, end_coordinate = coordinate.split('-', 1)
+        chrom.append(chromosome)
+        start.append(int(start_coordinate))
+        end.append(int(end_coordinate))
+    regiondf = pd.DataFrame(
+        {'Chromosome': chrom, 'Start': start, 'End': end},
+        index=names)
+    return regiondf
 
 def region_sets_to_signature(region_set: list,
                              region_set_name:str):
@@ -221,8 +227,8 @@ def get_motifs_per_TF(motif_enrichment_table: pd.DataFrame,
     Get motif annotated to each TF from a motif enrichment table
     """
     motifs= []
-    tf = tf.replace('(', '\(')
-    tf = tf.replace(')', '\)')
+    tf = tf.replace('(', r'\(')
+    tf = tf.replace(')', r'\)')
     for name in annotation:
         if name in motif_enrichment_table:
                 if motif_column != 'Index':
@@ -298,6 +304,30 @@ def target_to_query(target: Union[pr.PyRanges, List[str]],
     target_to_query = pd.DataFrame([target_regions, query_regions], index=['Target', 'Query']).T
     return target_to_query
     
+def get_motifs_per_TF_map(motif_enrichment_table: pd.DataFrame,
+                          annotation: List[str]):
+    """
+    Build a {TF: set(motif_ids)} mapping in a single pass over the annotation
+    columns.
+
+    This is the inverse of calling :func:`get_motifs_per_TF` once per TF (which
+    scans the whole table for every TF, i.e. O(n_TFs * n_motifs)). Each
+    annotation cell is a ', '-joined list of TFs, so splitting on ', ' recovers
+    the exact tokens that the ``tf,|tf$`` regex in :func:`get_motifs_per_TF`
+    matches.
+    """
+    tf_to_motifs: dict = {}
+    for name in annotation:
+        if name in motif_enrichment_table:
+            for motif_id, value in motif_enrichment_table[name].items():
+                # Skip NaN / missing values (matches na=False in str.contains
+                # and the 'nan' filter in get_TF_list).
+                if str(value) == 'nan':
+                    continue
+                for tf in value.split(', '):
+                    tf_to_motifs.setdefault(tf, set()).add(motif_id)
+    return tf_to_motifs
+
 def get_cistromes_per_region_set(motif_enrichment_region_set,
                   motif_hits_regions_set,
                   annotation: List[str] = ['Direct_annot', 'Motif_similarity_annot', 'Orthology_annot', 'Motif_similarity_and_Orthology_annot']):
@@ -306,21 +336,17 @@ def get_cistromes_per_region_set(motif_enrichment_region_set,
     """
     if 'Direct_annot' in annotation:
         tfs = get_TF_list(motif_enrichment_region_set, annotation=['Direct_annot'])
-        cistromes_per_region_set_direct = {tf : get_cistrome_per_TF(motif_hits_regions_set, 
-                                                            get_motifs_per_TF(motif_enrichment_region_set,
-                                                                           tf,
-                                                                           motif_column = 'Index',
-                                                                           annotation=['Direct_annot'])) for tf in tfs}
+        motifs_per_tf = get_motifs_per_TF_map(motif_enrichment_region_set, ['Direct_annot'])
+        cistromes_per_region_set_direct = {tf : get_cistrome_per_TF(motif_hits_regions_set,
+                                                            motifs_per_tf.get(tf, set())) for tf in tfs}
     else:
         cistromes_per_region_set_direct={}
-    
+
     if not 'Direct_annot' in annotation or len(annotation) > 1:
         tfs = get_TF_list(motif_enrichment_region_set)
-        cistromes_per_region_set_extended = {tf+'_extended': get_cistrome_per_TF(motif_hits_regions_set, 
-                                                            get_motifs_per_TF(motif_enrichment_region_set,
-                                                                           tf,
-                                                                           motif_column = 'Index',
-                                                                           annotation=annotation)) for tf in tfs}
+        motifs_per_tf = get_motifs_per_TF_map(motif_enrichment_region_set, annotation)
+        cistromes_per_region_set_extended = {tf+'_extended': get_cistrome_per_TF(motif_hits_regions_set,
+                                                            motifs_per_tf.get(tf, set())) for tf in tfs}
     else:
         cistromes_per_region_set_extended={}
     
